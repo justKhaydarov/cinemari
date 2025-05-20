@@ -3,12 +3,17 @@ import re
 import shutil
 import json
 import asyncio
+import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import FSInputFile
 from dotenv import load_dotenv
 import yt_dlp
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load the bot token from .env
 load_dotenv()
@@ -17,7 +22,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 # Define the admin user ID (replace with your actual admin user ID)
-ADMIN_USER_ID = 123456789  # TODO: Replace with the actual admin user ID
+ADMIN_USER_ID = 7965709229  # TODO: Replace with your actual Telegram user ID
 
 # Regex patterns for Instagram and TikTok URLs
 INSTAGRAM_PATTERN = r'https?://www\.instagram\.com/(p|reel)/([^/]+)/'
@@ -45,9 +50,9 @@ async def save_config(config):
 async def on_startup():
     global config
     config = await load_config()
+    logger.info(f"Config loaded: {config}")
 
 dp.startup.register(on_startup)
-
 
 # Handler for /start command
 @dp.message(CommandStart())
@@ -56,6 +61,7 @@ async def start(message: types.Message):
     if config['channel_id'] is not None and message.from_user.id != ADMIN_USER_ID:
         try:
             member = await bot.get_chat_member(config['channel_id'], message.from_user.id)
+            logger.info(f"User {message.from_user.id} membership status: {member.status}")
             if member.status not in ['member', 'administrator', 'creator']:
                 # User is not a member, add join prompt
                 if config['channel_username']:
@@ -65,14 +71,12 @@ async def start(message: types.Message):
                     ])
                     await message.reply(reply, reply_markup=keyboard)
                 else:
-                    reply += "\n\nTo use this bot, you must join the channel:"
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="Join Channel", url=f"https://t.me/{config['channel_username']}")]
-                    ])
-                    await message.reply(reply, reply_markup=keyboard)
+                    reply += f"\n\nTo use this bot, you must join the channel: {config['channel_title']} (ID: {config['channel_id']}). Please contact the admin for an invite link."
+                    await message.reply(reply)
                 return
-        except Exception:
-            # Exception means user is not in the channel, add join prompt
+        except Exception as e:
+            logger.error(f"Membership check failed for user {message.from_user.id}: {e}")
+            # Assume user is not a member if check fails
             if config['channel_username']:
                 reply += "\n\nTo use this bot, you must join the channel:"
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -86,16 +90,37 @@ async def start(message: types.Message):
     # User is admin, or is a member, or no channel is set
     await message.reply(reply)
 
-
 # Handler for /help command
 @dp.message(Command('help'))
 async def help_command(message: types.Message):
     reply = "Send me an Instagram or TikTok link, and I'll download and send you the media."
-    if config['channel_id'] is not None:
-        if config['channel_username']:
-            reply += f"\n\nTo use this bot, you must join the channel: @{config['channel_username']}"
-        else:
-            reply += f"\n\nTo use this bot, you must join the channel: {config['channel_title']} (ID: {config['channel_id']})"
+    if config['channel_id'] is not None and message.from_user.id != ADMIN_USER_ID:
+        try:
+            member = await bot.get_chat_member(config['channel_id'], message.from_user.id)
+            logger.info(f"User {message.from_user.id} membership status: {member.status}")
+            if member.status not in ['member', 'administrator', 'creator']:
+                if config['channel_username']:
+                    reply += "\n\nTo use this bot, you must join the channel:"
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="Join Channel", url=f"https://t.me/{config['channel_username']}")]
+                    ])
+                    await message.reply(reply, reply_markup=keyboard)
+                else:
+                    reply += f"\n\nTo use this bot, you must join the channel: {config['channel_title']} (ID: {config['channel_id']}). Please contact the admin for an invite link."
+                    await message.reply(reply)
+                return
+        except Exception as e:
+            logger.error(f"Membership check failed for user {message.from_user.id}: {e}")
+            if config['channel_username']:
+                reply += "\n\nTo use this bot, you must join the channel:"
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Join Channel", url=f"https://t.me/{config['channel_username']}")]
+                ])
+                await message.reply(reply, reply_markup=keyboard)
+            else:
+                reply += f"\n\nTo use this bot, you must join the channel: {config['channel_title']} (ID: {config['channel_id']}). Please contact the admin for an invite link."
+                await message.reply(reply)
+            return
     await message.reply(reply)
 
 # Handler for /setchannel command (admin only)
@@ -145,13 +170,19 @@ async def handle_message(message: types.Message):
     if message.from_user.id != ADMIN_USER_ID and config['channel_id'] is not None:
         try:
             member = await bot.get_chat_member(config['channel_id'], message.from_user.id)
+            logger.info(f"User {message.from_user.id} membership status: {member.status}")
             if member.status not in ['member', 'administrator', 'creator']:
                 if config['channel_username']:
-                    await message.reply(f"To use this bot, you must join the channel: @{config['channel_username']}")
+                    reply = f"To use this bot, you must join the channel:"
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="Join Channel", url=f"https://t.me/{config['channel_username']}")]
+                    ])
+                    await message.reply(reply, reply_markup=keyboard)
                 else:
-                    await message.reply(f"To use this bot, you must join the channel: {config['channel_title']} (ID: {config['channel_id']})")
+                    await message.reply(f"To use this bot, you must join the channel: {config['channel_title']} (ID: {config['channel_id']}). Please contact the admin for an invite link.")
                 return
         except Exception as e:
+            logger.error(f"Membership check failed for user {message.from_user.id}: {e}")
             await message.reply(f"Error checking channel membership: {e}")
             return
     # Proceed with link handling
@@ -177,6 +208,10 @@ async def handle_link(message: types.Message, url: str):
             'merge_output_format': 'mp4',
             'format': 'bestvideo+bestaudio/best',
         }
+        # Add cookies if cookies.txt exists
+        cookies_file = 'cookies.txt'
+        if os.path.exists(cookies_file):
+            ydl_opts['cookiefile'] = cookies_file
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             files = os.listdir(download_dir)
@@ -206,7 +241,11 @@ async def handle_link(message: types.Message, url: str):
         else:
             await message.reply("No supported media (images or videos) found.")
     except Exception as e:
-        await message.reply(f"Error downloading media: {str(e)}")
+        error_message = str(e)
+        reply = f"Error downloading media: {error_message}"
+        if "Restricted Video" in error_message or "not available in your country" in error_message:
+            reply += "\nThis content may be geo-restricted. Try using a VPN or ensure cookies.txt is provided with a logged-in Instagram session."
+        await message.reply(reply)
     finally:
         # Clean up downloaded files
         shutil.rmtree(download_dir, ignore_errors=True)
